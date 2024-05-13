@@ -16,7 +16,7 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 
-from onenote_dump.onenote import get_attachment
+from onenote import get_attachment
 
 
 class Converter:
