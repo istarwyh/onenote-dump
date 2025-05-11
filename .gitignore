@@ -3,3 +3,4 @@
 .vscode
 __pycache__
 my_venv/
+.DS_Store
