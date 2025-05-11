@@ -7,6 +7,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
+import log, onenote, onenote_auth, pipeline
 
 from onenote_dump import convert, log, onenote, onenote_auth, pipeline
 from onenote_dump.interactor import OneNoteInteractor

@@ -5,3 +5,5 @@ __pycache__
 dist/
 mcp-llms.txt
 mcp-python-sdk.md
+my_venv/
+.DS_Store
