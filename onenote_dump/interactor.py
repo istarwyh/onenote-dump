@@ -3,9 +3,8 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
-from requests import Session
-
-from onenote_dump import onenote_auth, onenote, pipeline, log
+from onenote_dump import pipeline
+from onenote_dump.core import OneNoteCore
 
 logger = logging.getLogger(__name__)
 
@@ -17,15 +16,11 @@ class OneNoteInteractor:
         Args:
             verbose: 是否显示详细日志
         """
-        log_level = logging.DEBUG if verbose else logging.INFO
-        log.setup_logging(log_level)
-        self.session = onenote_auth.get_session()
+        self.core = OneNoteCore(verbose=verbose)
     
     def list_notebooks(self) -> List[Dict[str, Any]]:
         """列出所有笔记本"""
-        notebooks = onenote.get_notebooks(self.session)
-        notebook_list = notebooks["value"] if isinstance(notebooks, dict) else notebooks
-        return notebook_list
+        return self.core.get_notebooks()
     
     def search_notes(self, keyword: str) -> List[Dict[str, Any]]:
         """
@@ -72,7 +67,7 @@ class OneNoteInteractor:
             - output_path: 输出目录路径
         """
         if new_session:
-            self.session = onenote_auth.get_session(new=True)
+            self.core = OneNoteCore(verbose=self.core.verbose, new_session=True)
             
         start_time = datetime.now()
         page_count = 0
@@ -84,14 +79,14 @@ class OneNoteInteractor:
         
         # 创建处理管道
         pipe = pipeline.Pipeline(
-            self.session,
+            self.core.session_info,
             notebook_name,
             output_path
         )
         
         try:
             # 获取并处理页面
-            for page in onenote.get_notebook_pages(self.session, notebook_name, section_name):
+            for page in self.core.get_notebook_pages(notebook_name, section_name):
                 page_count += 1
                 log_msg = f'Page {page_count}: {page["title"]}'
                 
