@@ -1,113 +1,150 @@
 import logging
+import sys # Added for StreamHandler
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 from onenote_dump import pipeline
-from onenote_dump.core import OneNoteCore
+# Ensure NotebookNotFound is imported from core if it's defined there or used by core's methods
+from onenote_dump.core import OneNoteCore, NotebookNotFound 
 
-logger = logging.getLogger(__name__)
+# Removed module-level logger, instances will manage or receive their logger
 
 class OneNoteInteractor:
-    def __init__(self, verbose: bool = False):
+    def __init__(self, verbose: bool = False, logger_instance: Optional[logging.Logger] = None):
         """
-        初始化 OneNote 交互器
+        Initialize OneNote Interactor.
         
         Args:
-            verbose: 是否显示详细日志
+            verbose: Enable verbose logging.
+            logger_instance: Optional logger instance to use. If None, creates its own.
         """
-        self.core = OneNoteCore(verbose=verbose)
+        self.verbose = verbose
+        
+        if logger_instance:
+            self.logger = logger_instance
+        else:
+            self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
+            # Configure this logger only if it has no handlers, to avoid conflicts
+            # with existing global logging configurations (e.g., from basicConfig).
+            if not self.logger.handlers:
+                stderr_handler = logging.StreamHandler(sys.stderr)
+                formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+                stderr_handler.setFormatter(formatter)
+                self.logger.addHandler(stderr_handler)
+                self.logger.propagate = False # Prevent logs from going to the root logger if we configured this one
+            
+            self.logger.setLevel(logging.DEBUG if self.verbose else logging.INFO)
+        
+        # OneNoteCore will also need to be updated to accept logger_instance
+        self.core = OneNoteCore(verbose=self.verbose, logger_instance=self.logger)
     
     def list_notebooks(self) -> List[Dict[str, Any]]:
-        """列出所有笔记本"""
+        """List all notebooks"""
+        self.logger.debug("Interactor: Listing notebooks via core")
         return self.core.get_notebooks()
     
     def search_notes(self, keyword: str) -> List[Dict[str, Any]]:
         """
-        搜索笔记（待实现：需要 Microsoft Graph API 的搜索功能）
+        Search notes (placeholder, needs Microsoft Graph API search feature)
         
         Args:
-            keyword: 搜索关键词
+            keyword: Search keyword
         """
-        # TODO: 实现笔记搜索功能
+        self.logger.warning("Search functionality is not implemented yet.")
+        # TODO: Implement note search
         raise NotImplementedError("Search functionality not implemented yet")
     
     def get_recent_notes(self, limit: int = 10) -> List[Dict[str, Any]]:
         """
-        获取最近的笔记（待实现：需要按时间排序的API）
+        Get recent notes (placeholder, needs time-sorted API)
         
         Args:
-            limit: 返回的笔记数量
+            limit: Number of notes to return
         """
-        # TODO: 实现最近笔记获取
+        self.logger.warning("Recent notes functionality is not implemented yet.")
+        # TODO: Implement recent notes retrieval
         raise NotImplementedError("Recent notes functionality not implemented yet")
     
     def dump_notebook(self, 
                      notebook_name: str,
                      output_dir: str,
                      section_name: Optional[str] = None,
-                     max_pages: Optional[int] = None,
-                     start_page: Optional[int] = None,
+                     max_pages: Optional[int] = None, # Changed from int = 0 for clarity
+                     start_page: Optional[int] = None, # Changed from int = 0 for clarity
                      new_session: bool = False) -> Dict[str, Any]:
         """
-        导出笔记本内容到指定目录
+        Export notebook content to the specified directory.
         
         Args:
-            notebook_name: 要导出的笔记本名称
-            output_dir: 输出目录
-            section_name: 可选，指定要导出的分区名称
-            max_pages: 可选，最大导出页面数
-            start_page: 可选，开始导出的页面编号
-            new_session: 是否使用新的会话（忽略保存的认证令牌）
+            notebook_name: Name of the notebook to export.
+            output_dir: Output directory.
+            section_name: Optional, name of the section to export.
+            max_pages: Optional, maximum number of pages to export.
+            start_page: Optional, page number to start exporting from (0-indexed).
+            new_session: Whether to use a new session (ignore saved auth token).
         
         Returns:
-            包含导出结果的字典，包括：
-            - total_pages: 导出的总页数
-            - duration_seconds: 导出耗时（秒）
-            - output_path: 输出目录路径
+            Dictionary with export results:
+            - total_pages: Total pages exported.
+            - duration_seconds: Export duration in seconds.
+            - output_path: Path to the output directory.
         """
         if new_session:
-            self.core = OneNoteCore(verbose=self.core.verbose, new_session=True)
+            self.logger.info("Forcing new authentication session for core.")
+            # Re-initialize core with the same logger settings
+            self.core = OneNoteCore(verbose=self.verbose, new_session=True, logger_instance=self.logger)
             
         start_time = datetime.now()
-        page_count = 0
+        page_counter = 0 # Renamed from page_count to avoid confusion with max_pages
         pages_exported = 0
         
-        # 创建输出目录
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         
-        # 创建处理管道
         pipe = pipeline.Pipeline(
             self.core.session_info,
             notebook_name,
             output_path
         )
         
+        self.logger.info(f"Starting dump for notebook '{notebook_name}' to '{output_dir}'")
+        if section_name:
+            self.logger.info(f"Targeting section: '{section_name}'")
+        
         try:
-            # 获取并处理页面
             for page in self.core.get_notebook_pages(notebook_name, section_name):
-                page_count += 1
-                log_msg = f'Page {page_count}: {page["title"]}'
+                page_counter += 1
+                log_msg = f'Page {page_counter}: {page.get("title", "Untitled Page")}'
                 
-                if start_page is None or page_count >= start_page:
-                    logger.info(log_msg)
+                # Determine if page should be processed based on start_page and max_pages
+                should_process = True
+                if start_page is not None and page_counter <= start_page: # Pages are 1-indexed for user, start_page 0-indexed in code means skip 0 pages
+                    should_process = False
+                    log_msg += " [skipped due to start_page]"
+                
+                if should_process:
+                    self.logger.info(log_msg)
                     pipe.add_page(page)
                     pages_exported += 1
                 else:
-                    logger.info(log_msg + " [skipped]")
+                    self.logger.debug(log_msg) # Log skipped pages at debug level
                     
-                if max_pages and page_count >= max_pages:
+                if max_pages is not None and pages_exported >= max_pages:
+                    self.logger.info(f"Reached max_pages limit of {max_pages}.")
                     break
                     
-        except onenote.NotebookNotFound as e:
-            logger.error(str(e))
+        except NotebookNotFound as e:
+            self.logger.error(f"Notebook '{notebook_name}' not found: {e}")
             raise
+        except Exception as e:
+            self.logger.exception(f"An unexpected error occurred during notebook dump: {e}") # Use .exception for stack trace
+            raise # Re-raise the original exception
         finally:
             pipe.done()
             
         duration = (datetime.now() - start_time).total_seconds()
-        logger.info(f"Done! Exported {pages_exported} pages in {duration:.1f} seconds")
+        self.logger.info(f"Dump finished. Exported {pages_exported} pages in {duration:.1f} seconds.")
         
         return {
             "total_pages": pages_exported,
@@ -117,11 +154,12 @@ class OneNoteInteractor:
     
     def create_note(self, notebook_name: str, content: str):
         """
-        创建新笔记（待实现：需要写入API权限）
+        Create a new note (placeholder, needs write API permission).
         
         Args:
-            notebook_name: 笔记本名称
-            content: 笔记内容
+            notebook_name: Notebook name.
+            content: Note content.
         """
-        # TODO: 实现笔记创建
+        self.logger.warning("Create note functionality is not implemented yet.")
+        # TODO: Implement note creation
         raise NotImplementedError("Create note functionality not implemented yet")

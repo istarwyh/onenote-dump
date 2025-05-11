@@ -18,6 +18,7 @@ pytest = "^6.2.5"
 
 [tool.poetry.scripts]
 onenote-dump = "onenote_dump.main:main"
+onenote-dump-mcp = "onenote_dump.main:run_mcp_server"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

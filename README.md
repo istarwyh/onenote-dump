@@ -13,6 +13,7 @@ A utility for converting a Microsoft OneNote notebook to markdown, with a clean 
 - Concurrent processing with pipeline architecture
 - Type-safe with full type hints
 - Both CLI and programmatic usage
+- MCP server mode for programmatic interaction via [FastMCP](https://github.com/windsurf-ai/fastmcp)
 
 ## Project Structure
 
@@ -120,25 +121,49 @@ pip install -r requirements.txt -r requirements-dev.txt
 poetry install
 ```
 
+## Authentication
+
+This utility uses OAuth 2.0 to authenticate with the Microsoft Graph API. The first time you run a command that requires API access (e.g., `list` or `dump`), your web browser will open, prompting you to log in with your Microsoft account and grant permissions to the application.
+
+Key points about authentication:
+
+- **One-Time Setup**: After successful authentication, an access token (and refresh token) is saved locally (typically at `~/.onenote-dump-token`). Subsequent runs will use this saved token until it expires, at which point you may be prompted to re-authenticate.
+- **Redirect URI**: The application listens on `http://localhost:8000/auth` for the authentication redirect from Microsoft. This URI must be configured as a 'Mobile and desktop applications' redirect URI in your Azure AD application registration if you are using your own.
+- **Client ID**: The `CLIENT_ID` for the Azure AD application is hardcoded in `onenote_dump/onenote_auth.py`. If you wish to use your own Azure AD application, you'll need to replace this `CLIENT_ID` with your own.
+- **`OAUTHLIB_INSECURE_TRANSPORT`**: Due to `oauthlib`'s strict HTTPS requirements and the use of `http://localhost` for the redirect URI (standard for local desktop apps), you **MUST** set the environment variable `OAUTHLIB_INSECURE_TRANSPORT='1'` when running commands that initiate or refresh authentication. This tells `oauthlib` to allow the HTTP redirect URI for localhost. This does not compromise the security of the token exchange with Microsoft, which always occurs over HTTPS.
+
+Example of setting the environment variable for a command:
+`OAUTHLIB_INSECURE_TRANSPORT='1' python -m onenote_dump.main list`
+
 ## Usage
 
 ### Command Line Interface
 
-```bash
-# Basic usage
-python -m onenote_dump.main <notebook> <output directory>
+**Important**: When running commands that might trigger authentication (first run, expired token, or using `--new-session`), prefix your command with `OAUTHLIB_INSECURE_TRANSPORT='1'` as shown below.
 
-# Example: dump specific notebook
-python -m onenote_dump.main "Work Notes" ./output
+```bash
+# List available notebooks (authentication may be triggered)
+OAUTHLIB_INSECURE_TRANSPORT='1' python -m onenote_dump.main list
+
+# Example: dump specific notebook to default 'output' directory (authentication may be triggered)
+OAUTHLIB_INSECURE_TRANSPORT='1' python -m onenote_dump.main dump "Work Notes"
+
+# Example: dump specific notebook to a specified directory
+OAUTHLIB_INSECURE_TRANSPORT='1' python -m onenote_dump.main --output-dir ./my_work_notes dump "Work Notes"
 
 # Example: dump specific section with verbose output
-python -m onenote_dump.main "Work Notes" ./output --section "Projects" -v
+OAUTHLIB_INSECURE_TRANSPORT='1' python -m onenote_dump.main -v --output-dir ./output dump "Work Notes" --section-name "Projects"
 
 # Example: limit number of pages
-python -m onenote_dump.main "Work Notes" ./output -m 10
+OAUTHLIB_INSECURE_TRANSPORT='1' python -m onenote_dump.main --output-dir ./output --max-pages 10 dump "Work Notes"
 
 # Example: start from specific page
-python -m onenote_dump.main "Work Notes" ./output -s 5
+OAUTHLIB_INSECURE_TRANSPORT='1' python -m onenote_dump.main --output-dir ./output --start-page 5 dump "Work Notes"
+
+# Run as an MCP server (see MCP Server Mode section below)
+# Authentication will be handled when MCP tools requiring it are called.
+# Ensure the environment running the MCP server has OAUTHLIB_INSECURE_TRANSPORT='1' set if needed.
+python -m onenote_dump.main --mcp
 ```
 
 ### As a Library
@@ -167,7 +192,53 @@ result = interactor.dump_notebook(
 # Check results
 print(f"Exported {result['total_pages']} pages in {result['duration_seconds']:.1f} seconds")
 print(f"Output directory: {result['output_path']}")
+
+# Optional: force new auth session
+# Note: If authentication is triggered (e.g. new_session=True or no valid token),
+# ensure the environment has OAUTHLIB_INSECURE_TRANSPORT='1' set.
+result = interactor.dump_notebook(
+    notebook_name="Work Notes",
+    output_dir="./output",
+    section_name="Projects",  # Optional: specific section
+    max_pages=100,          # Optional: limit pages
+    start_page=1,           # Optional: start page
+    new_session=True        # Optional: force new auth session
+)
 ```
+
+### MCP Server Mode
+
+The utility can run as an MCP (Model Context Protocol) server, allowing it to be controlled programmatically by MCP clients. This mode uses [FastMCP](https://github.com/windsurf-ai/fastmcp) and communicates over stdio.
+
+To start the server:
+```bash
+python -m onenote_dump.main --mcp
+```
+The server will then listen for JSON-RPC 2.0 messages on standard input and send responses to standard output.
+
+#### Available MCP Tools
+
+**1. `list_notebooks_mcp`**
+
+- **Description**: List available OneNote notebooks.
+- **Parameters**:
+  - `new_session` (boolean, optional, default: `False`): If `True`, ignore any saved session and force re-authentication.
+- **Returns**: (array of objects) A list of notebook objects, where each object contains details like `id` and `displayName`.
+  Example: `[{"id": "notebook_id_1", "displayName": "My Notebook"}, ...]`
+
+**2. `dump_notebook_mcp`**
+
+- **Description**: Dump a OneNote notebook to markdown.
+- **Parameters**:
+  - `args` (object): An object containing the arguments for the dump operation.
+    - `notebook_name` (string, required): The name of the notebook to dump.
+    - `output_dir` (string, required): The directory where the notebook content will be saved.
+    - `section_name` (string, optional, default: `None`): The name of a specific section to dump. If `None`, all sections are dumped.
+    - `max_pages` (integer, optional, default: `None`): Maximum number of pages to dump per section. If `None`, all pages are dumped.
+    - `start_page` (integer, optional, default: `None`): Page number (1-indexed) to start dumping from. If `None`, starts from the first page.
+    - `new_session` (boolean, optional, default: `False`): If `True`, ignore any saved session and force re-authentication.
+- **Returns**: (object) An object containing the status of the dump operation.
+  Example: `{"status": "success", "path": "./output/My Notebook", "total_pages": 50, "duration_seconds": 120.5}` (Note: actual fields in result may vary based on `OneNoteInteractor.dump_notebook` return)
 
 ### Poetry Users
 
@@ -259,4 +330,3 @@ Example:
 feat: add notebook search functionality
 fix: handle API rate limiting correctly
 docs: update installation instructions
-```
